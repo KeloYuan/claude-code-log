@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """Convert Claude transcript JSONL files to HTML."""
 
-import contextlib
 import json
-import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 import traceback
-from typing import Any, Dict, Iterator, List, Optional, TYPE_CHECKING, cast
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, cast
 
 import dateparser
 
@@ -1078,6 +1076,33 @@ def _build_session_data_from_messages(
     # Pre-compute warmup session IDs to filter them out
     warmup_session_ids = get_warmup_session_ids(messages)
 
+    # Map summaries to sessions via leafUuid -> message UUID -> session ID.
+    # Mirrors _update_cache_with_session_data so the title fallback chain
+    # (ai_title > summary > preview > id) survives the cache-miss path.
+    uuid_to_session: Dict[str, str] = {}
+    uuid_to_session_backup: Dict[str, str] = {}
+    for message in messages:
+        if hasattr(message, "uuid") and hasattr(message, "sessionId"):
+            message_uuid = getattr(message, "uuid", "")
+            session_id = getattr(message, "sessionId", "")
+            if message_uuid and session_id:
+                if type(message) is AssistantTranscriptEntry:
+                    uuid_to_session[message_uuid] = session_id
+                else:
+                    uuid_to_session_backup[message_uuid] = session_id
+
+    session_summaries: Dict[str, str] = {}
+    for message in messages:
+        if isinstance(message, SummaryTranscriptEntry):
+            leaf_uuid = message.leafUuid
+            if leaf_uuid in uuid_to_session:
+                session_summaries[uuid_to_session[leaf_uuid]] = message.summary
+            elif (
+                leaf_uuid in uuid_to_session_backup
+                and uuid_to_session_backup[leaf_uuid] not in session_summaries
+            ):
+                session_summaries[uuid_to_session_backup[leaf_uuid]] = message.summary
+
     # Map AI-generated titles to sessions (last entry per sessionId wins).
     session_ai_titles: Dict[str, str] = {}
     for message in messages:
@@ -1163,6 +1188,7 @@ def _build_session_data_from_messages(
     for session_id, data in sessions.items():
         result[session_id] = SessionCacheData(
             session_id=session_id,
+            summary=session_summaries.get(session_id),
             ai_title=session_ai_titles.get(session_id),
             first_timestamp=data["first_timestamp"],
             last_timestamp=data["last_timestamp"],
