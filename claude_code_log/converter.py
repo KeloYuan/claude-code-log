@@ -32,6 +32,7 @@ from .parser import parse_timestamp
 from .factories import create_transcript_entry
 from .factories.teammate_factory import find_team_lead_body
 from .models import (
+    AttachmentTranscriptEntry,
     BaseTranscriptEntry,
     DetailLevel,
     PassthroughTranscriptEntry,
@@ -356,8 +357,13 @@ def load_transcript(
                         "summary",
                         "system",
                         "queue-operation",
+                        "attachment",
                     ]:
-                        # Parse using Pydantic models
+                        # Parse using Pydantic models. ``attachment`` joined
+                        # this list in #128 so the hook payload survives to
+                        # the rendering layer at full detail (was a
+                        # PassthroughTranscriptEntry before, which threw
+                        # the payload away at parse time).
                         entry = create_transcript_entry(entry_dict)
                         messages.append(entry)
                     elif entry_type in SILENT_SKIP_TYPES:
@@ -366,7 +372,8 @@ def load_transcript(
                     elif entry_dict.get("uuid") and entry_dict.get("sessionId"):
                         # Unknown type with DAG-relevant fields — create a
                         # PassthroughTranscriptEntry to preserve DAG chain
-                        # continuity (e.g. "attachment", "permission-mode").
+                        # continuity (e.g. "progress", "agent-setting",
+                        # "pr-link", "ai-title").
                         messages.append(
                             PassthroughTranscriptEntry(
                                 uuid=entry_dict["uuid"],
@@ -800,7 +807,14 @@ def deduplicate_messages(messages: list[TranscriptEntry]) -> list[TranscriptEntr
         elif isinstance(message, SummaryTranscriptEntry):
             # Summaries have no timestamp or uuid - use leafUuid to keep them distinct
             content_key = message.leafUuid
-        elif isinstance(message, (SystemTranscriptEntry, PassthroughTranscriptEntry)):
+        elif isinstance(
+            message,
+            (
+                SystemTranscriptEntry,
+                PassthroughTranscriptEntry,
+                AttachmentTranscriptEntry,
+            ),
+        ):
             content_key = message.uuid
 
         # Create deduplication key
@@ -1058,7 +1072,12 @@ def _build_session_data_from_messages(
     sessions: Dict[str, Dict[str, Any]] = {}
     for message in messages:
         if not hasattr(message, "sessionId") or isinstance(
-            message, (SummaryTranscriptEntry, PassthroughTranscriptEntry)
+            message,
+            (
+                SummaryTranscriptEntry,
+                PassthroughTranscriptEntry,
+                AttachmentTranscriptEntry,
+            ),
         ):
             continue
 

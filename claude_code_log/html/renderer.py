@@ -17,6 +17,7 @@ from ..models import (
     CommandOutputMessage,
     CompactedSummaryMessage,
     DetailLevel,
+    HookAttachmentMessage,
     HookSummaryMessage,
     ImageContent,
     SessionHeaderMessage,
@@ -89,6 +90,7 @@ from ..renderer_timings import (
 from ..utils import format_timestamp
 from .system_formatters import (
     format_away_summary_content,
+    format_hook_attachment_content,
     format_hook_summary_content,
     format_session_header_content,
     format_system_content,
@@ -268,6 +270,11 @@ class HtmlRenderer(Renderer):
         self, content: HookSummaryMessage, _: TemplateMessage
     ) -> str:
         return format_hook_summary_content(content)
+
+    def format_HookAttachmentMessage(
+        self, content: HookAttachmentMessage, _: TemplateMessage
+    ) -> str:
+        return format_hook_attachment_content(content)
 
     def format_AwaySummaryMessage(
         self, content: AwaySummaryMessage, _: TemplateMessage

@@ -22,6 +22,7 @@ from .models import (
     TranscriptEntry,
     AssistantMessageModel,
     AssistantTranscriptEntry,
+    AttachmentTranscriptEntry,
     PassthroughTranscriptEntry,
     SystemTranscriptEntry,
     SummaryTranscriptEntry,
@@ -41,6 +42,7 @@ from .models import (
     BashOutputMessage,
     CommandOutputMessage,
     CompactedSummaryMessage,
+    HookAttachmentMessage,
     HookSummaryMessage,
     SessionHeaderMessage,
     SlashCommandMessage,
@@ -69,6 +71,7 @@ from .factories import (
     create_user_message,
     ToolItemResult,
 )
+from .factories.attachment_factory import create_attachment_message
 from .utils import (
     format_timestamp,
     format_timestamp_range,
@@ -2718,6 +2721,17 @@ def _filter_messages(messages: list[TranscriptEntry]) -> list[TranscriptEntry]:
         if isinstance(message, PassthroughTranscriptEntry):
             continue
 
+        # Attachment entries (issue #128): include — pass-2 walker will
+        # call ``create_attachment_message`` to surface hook payloads at
+        # full detail. Non-hook attachment flavours produce ``None`` and
+        # are silently dropped at registration time, mirroring the
+        # pre-#128 PassthroughTranscriptEntry behaviour. Detail-level
+        # filtering happens later: ``_filter_template_by_detail`` drops
+        # ``HookAttachmentMessage`` at HIGH and below.
+        if isinstance(message, AttachmentTranscriptEntry):
+            filtered.append(message)
+            continue
+
         # Skip most queue operations - only process 'remove' for counts
         if isinstance(message, QueueOperationTranscriptEntry):
             if message.operation != "remove":
@@ -2782,6 +2796,7 @@ _HIGH_EXCLUDE_CLASSES: tuple[type[MessageContent], ...] = (
     UserMemoryMessage,
     SystemMessage,
     HookSummaryMessage,
+    HookAttachmentMessage,
     UnknownMessage,
 )
 
@@ -3159,6 +3174,13 @@ def _collect_session_info(
         if isinstance(message, SystemTranscriptEntry):
             continue
 
+        # Attachment entries (#128) carry no user/assistant content and
+        # don't anchor session metadata; their session is inherited from
+        # whichever real turn anchors them via parentUuid. Skip here so
+        # they don't bump message_count or last_timestamp.
+        if isinstance(message, AttachmentTranscriptEntry):
+            continue
+
         # Get message content
         message_content: list[ContentItem]
         if isinstance(message, QueueOperationTranscriptEntry):
@@ -3402,6 +3424,19 @@ def _render_messages(
                 if effective_session:
                     system_msg.render_session_id = effective_session
                 ctx.register(system_msg)
+            continue
+
+        # Handle attachment entries (issue #128). The factory returns
+        # ``None`` for non-hook flavours; those are silently dropped
+        # here, mirroring how Passthrough was handled before #128.
+        if isinstance(message, AttachmentTranscriptEntry):
+            attachment_content = create_attachment_message(message)
+            if attachment_content:
+                attachment_msg = TemplateMessage(attachment_content)
+                effective_session = agent_parent_session or current_render_session
+                if effective_session:
+                    attachment_msg.render_session_id = effective_session
+                ctx.register(attachment_msg)
             continue
 
         # Skip summary and passthrough entries (should be filtered in pass 1,
@@ -3796,6 +3831,16 @@ class Renderer:
         self, _content: HookSummaryMessage, _: TemplateMessage
     ) -> str:
         return "System Hook"
+
+    def title_HookAttachmentMessage(
+        self, content: HookAttachmentMessage, _: TemplateMessage
+    ) -> str:
+        # Title surfaces the hook event + name (e.g. "Hook ·
+        # PostToolUse:TaskUpdate") so distinct hooks don't blur into
+        # one another in long transcripts. Falls back to the kind
+        # discriminator when name/event aren't recorded.
+        label = content.hook_name or content.hook_event or content.kind
+        return f"Hook · {label}"
 
     def title_AwaySummaryMessage(
         self, _content: AwaySummaryMessage, _: TemplateMessage
